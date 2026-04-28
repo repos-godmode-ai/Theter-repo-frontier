@@ -1,5 +1,9 @@
 import { Connection, PublicKey } from "@solana/web3.js";
-import type { ParsedInstruction, ParsedTransactionWithMeta } from "@solana/web3.js";
+import type {
+  ParsedInstruction,
+  ParsedTransactionWithMeta,
+  PartiallyDecodedInstruction,
+} from "@solana/web3.js";
 
 export type VerifyResult =
   | {
@@ -10,6 +14,10 @@ export type VerifyResult =
   | { ok: false; reason: string };
 
 const MEMO_PROGRAM = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+
+function isParsedInstruction(ix: ParsedInstruction | PartiallyDecodedInstruction): ix is ParsedInstruction {
+  return "parsed" in ix && typeof (ix as ParsedInstruction).parsed === "object";
+}
 
 function scanMemo(ix: ParsedInstruction, referenceId: string): boolean {
   if (!ix.programId.equals(MEMO_PROGRAM)) return false;
@@ -37,12 +45,12 @@ function collectSplTransfer(ix: ParsedInstruction, mint: PublicKey, payTo: Publi
 function walkInstructions(tx: ParsedTransactionWithMeta, cb: (ix: ParsedInstruction) => void) {
   const msg = tx.transaction.message;
   for (const ix of msg.instructions) {
-    if ("programId" in ix) cb(ix as ParsedInstruction);
+    if (isParsedInstruction(ix)) cb(ix);
   }
   const inner = tx.meta?.innerInstructions ?? [];
   for (const group of inner) {
     for (const ix of group.instructions) {
-      if ("programId" in ix) cb(ix as ParsedInstruction);
+      if (isParsedInstruction(ix)) cb(ix);
     }
   }
 }

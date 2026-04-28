@@ -1,16 +1,33 @@
-import type { RequestHandler } from "express";
+import type { Request, RequestHandler } from "express";
 
 export type PaywallMiddlewareOptions = {
   gatewayUrl: string;
   productPublicId: string;
 };
 
-async function introspect(gatewayUrl: string, bearer: string): Promise<{ valid: boolean; claims?: any }> {
+export type PaywallClaims = {
+  typ: string;
+  productPublicId: string;
+  payerPubkey: string;
+  referenceId: string;
+};
+
+async function introspect(
+  gatewayUrl: string,
+  bearer: string
+): Promise<{ valid: boolean; claims?: PaywallClaims }> {
   const r = await fetch(new URL("/v1/session/introspect", gatewayUrl).toString(), {
     headers: { Authorization: `Bearer ${bearer}` },
   });
+  if (r.status === 401) return { valid: false };
   if (!r.ok) return { valid: false };
-  return (await r.json()) as { valid: boolean; claims?: any };
+  try {
+    const data = (await r.json()) as { valid?: boolean; claims?: PaywallClaims };
+    if (data.valid && data.claims?.productPublicId) return { valid: true, claims: data.claims };
+  } catch {
+    return { valid: false };
+  }
+  return { valid: false };
 }
 
 /**
@@ -25,7 +42,7 @@ export function paywallProtect(opts: PaywallMiddlewareOptions): RequestHandler {
     if (bearer) {
       const intro = await introspect(opts.gatewayUrl, bearer);
       if (intro.valid && intro.claims?.productPublicId === opts.productPublicId) {
-        (req as any).paywall = { claims: intro.claims };
+        (req as Request & { paywall?: { claims: PaywallClaims } }).paywall = { claims: intro.claims };
         next();
         return;
       }

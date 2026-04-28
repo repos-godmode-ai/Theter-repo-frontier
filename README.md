@@ -71,7 +71,8 @@ npm run dev -w @paywall/example-api
 
 - `GET /v1/solana/mint-info?mint=` — decimals for the configured or passed mint.
 - `POST /v1/solana/derive-ata` `{ "owner": "<wallet pubkey>" }` — canonical ATA addresses (classic + Token-2022 program).
-- Creating a product **validates** `merchantPayTo` on-chain as an SPL token account for `USDT_MINT`.
+- Creating a product **validates** `merchantPayTo` on-chain as an SPL token account for `USDT_MINT` (unless `PAYWALL_SKIP_PAY_TO_VALIDATION=1` for local smoke tests).
+- **`POST /v1/verify`** is **idempotent** for the same `referenceId` + tx: after success, repeating the request returns a **new JWT**; `awaiting_approval` repeats **202**; **daily limit** returns **403** without marking paid (challenge stays **pending**).
 
 ## Security notes (read before mainnet)
 

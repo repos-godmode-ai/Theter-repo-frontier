@@ -7,18 +7,14 @@ import {
   createPaymentChallenge,
   createProduct,
   getPaymentByReference,
-  getPaymentByTxSignature,
   getProductByPublicId,
   listProducts,
   listRecentPayments,
   markPaymentVerified,
   openDbSync,
-  setPaymentAwaitingApproval,
-  sumVerifiedPaymentsForPayerToday,
   type ProductPolicy,
 } from "./db.js";
 import { signSessionToken, verifySessionToken } from "./jwt.js";
-import { verifyUsdtPaymentTx } from "./solana-verify.js";
 import {
   deriveAtaAddresses,
   fetchMintDecimals,
@@ -27,6 +23,7 @@ import {
   validateMerchantPayTo,
 } from "./solana-helpers.js";
 import { formatAtomicToDecimal } from "./format-atomic.js";
+import { handlePaymentVerify } from "./services/paymentVerify.js";
 
 const cfg = loadConfig();
 const db = openDbSync(cfg.DATABASE_PATH);
@@ -134,22 +131,47 @@ app.post("/v1/admin/products", requireAdmin, async (req, res) => {
     return;
   }
   try {
-    const payTo = new PublicKey(parsed.data.merchantPayTo);
-    const expectedMint = new PublicKey(cfg.USDT_MINT);
-    const v = await validateMerchantPayTo({
-      connection: solanaConnection,
-      expectedMint,
-      payTo,
-    });
-    if (!v.ok) {
-      res.status(400).json({
-        error: "invalid_merchant_pay_to",
-        reason: v.reason,
-        docs: solanaDocsTokensUrl(),
-        hint: "payTo must be an SPL token account that holds the configured USDT mint (often the merchant wallet ATA).",
+    let payToValidation: {
+      mintDecimals: number;
+      tokenProgram: string;
+      isCanonicalAta: boolean;
+      merchantWallet: string | null;
+      skipped?: boolean;
+    } | undefined;
+
+    if (!cfg.skipPayToValidation) {
+      const payTo = new PublicKey(parsed.data.merchantPayTo);
+      const expectedMint = new PublicKey(cfg.USDT_MINT);
+      const v = await validateMerchantPayTo({
+        connection: solanaConnection,
+        expectedMint,
+        payTo,
       });
-      return;
+      if (!v.ok) {
+        res.status(400).json({
+          error: "invalid_merchant_pay_to",
+          reason: v.reason,
+          docs: solanaDocsTokensUrl(),
+          hint: "payTo must be an SPL token account that holds the configured USDT mint (often the merchant wallet ATA). Set PAYWALL_SKIP_PAY_TO_VALIDATION=1 only for local dev.",
+        });
+        return;
+      }
+      payToValidation = {
+        mintDecimals: v.mint.decimals,
+        tokenProgram: v.mint.program,
+        isCanonicalAta: v.isCanonicalAta,
+        merchantWallet: v.tokenAccountOwner,
+      };
+    } else {
+      payToValidation = {
+        mintDecimals: 6,
+        tokenProgram: "skipped",
+        isCanonicalAta: false,
+        merchantWallet: null,
+        skipped: true,
+      };
     }
+
     const publicId = createProduct(db, {
       name: parsed.data.name,
       merchantPayTo: parsed.data.merchantPayTo,
@@ -158,12 +180,7 @@ app.post("/v1/admin/products", requireAdmin, async (req, res) => {
     });
     res.status(201).json({
       publicId,
-      payToValidation: {
-        mintDecimals: v.mint.decimals,
-        tokenProgram: v.mint.program,
-        isCanonicalAta: v.isCanonicalAta,
-        merchantWallet: v.tokenAccountOwner,
-      },
+      payToValidation,
     });
   } catch (e) {
     res.status(400).json({
@@ -249,100 +266,32 @@ app.post("/v1/verify", async (req, res) => {
     return;
   }
 
-  const existing = getPaymentByTxSignature(db, parsed.data.transactionSignature);
-  if (existing) {
-    res.status(409).json({ error: "signature_already_used" });
-    return;
-  }
-
-  const payment = getPaymentByReference(db, parsed.data.referenceId);
-  if (!payment) {
-    res.status(404).json({ error: "reference_not_found" });
-    return;
-  }
-  if (payment.status !== "pending") {
-    res.status(400).json({ error: "invalid_payment_state", status: payment.status });
-    return;
-  }
-  if (new Date(payment.expires_at).getTime() < Date.now()) {
-    res.status(400).json({ error: "challenge_expired" });
-    return;
-  }
-
-  const prodRow = db.prepare(`SELECT * FROM products WHERE id = ?`).get(payment.product_id) as
-    | import("./db.js").ProductRow
-    | undefined;
-  if (!prodRow) {
-    res.status(500).json({ error: "product_missing" });
-    return;
-  }
-
-  const minAmount = BigInt(prodRow.amount_atomic);
-  const verified = await verifyUsdtPaymentTx({
-    rpcUrl: cfg.RPC_URL,
-    usdtMint: cfg.USDT_MINT,
-    merchantPayTo: prodRow.merchant_pay_to,
-    minAmountAtomic: minAmount,
+  const result = await handlePaymentVerify({
+    db,
+    cfg,
     referenceId: parsed.data.referenceId,
-    signature: parsed.data.transactionSignature,
+    transactionSignature: parsed.data.transactionSignature,
   });
 
-  if (!verified.ok) {
-    res.status(400).json({ error: "verification_failed", reason: verified.reason });
-    return;
+  switch (result.kind) {
+    case "ok":
+      res.json(result.body);
+      return;
+    case "awaiting":
+      res.status(202).json(result.body);
+      return;
+    case "daily_limit":
+      res.status(403).json(result.body);
+      return;
+    case "error":
+      res.status(result.status).json(result.body);
+      return;
+    default: {
+      const _exhaustive: never = result;
+      void _exhaustive;
+      res.status(500).json({ error: "internal" });
+    }
   }
-
-  const policy = JSON.parse(prodRow.policy_json || "{}") as ProductPolicy;
-  const dailyLimit = BigInt(policy.dailyLimitAtomic || "0");
-  const approvalOver = BigInt(policy.approvalOverAtomic || "0");
-
-  const spentToday = sumVerifiedPaymentsForPayerToday(db, prodRow.id, verified.payerPubkey);
-  const nextTotal = spentToday + verified.amountPaidAtomic;
-  if (dailyLimit > 0n && nextTotal > dailyLimit) {
-    res.status(403).json({
-      error: "daily_limit_exceeded",
-      spentToday: spentToday.toString(),
-      limit: dailyLimit.toString(),
-    });
-    return;
-  }
-
-  if (approvalOver > 0n && verified.amountPaidAtomic > approvalOver) {
-    setPaymentAwaitingApproval(
-      db,
-      parsed.data.referenceId,
-      parsed.data.transactionSignature,
-      verified.payerPubkey,
-      verified.amountPaidAtomic.toString()
-    );
-    res.status(202).json({
-      status: "awaiting_approval",
-      referenceId: parsed.data.referenceId,
-      message: "Merchant must approve in console; then call POST /v1/admin/approvals/:referenceId/grant",
-    });
-    return;
-  }
-
-  markPaymentVerified(
-    db,
-    parsed.data.referenceId,
-    parsed.data.transactionSignature,
-    verified.payerPubkey,
-    verified.amountPaidAtomic.toString()
-  );
-
-  const { token, exp } = signSessionToken(
-    cfg.JWT_SECRET,
-    {
-      typ: "paywall_session",
-      productPublicId: prodRow.public_id,
-      payerPubkey: verified.payerPubkey,
-      referenceId: parsed.data.referenceId,
-    },
-    3600
-  );
-
-  res.json({ status: "ok", token, expiresAt: new Date(exp * 1000).toISOString() });
 });
 
 app.post("/v1/admin/approvals/:referenceId/grant", requireAdmin, (req, res) => {
