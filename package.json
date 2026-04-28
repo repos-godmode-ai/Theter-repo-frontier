@@ -11,7 +11,8 @@
     "dev": "npm run dev -w @paywall/gateway",
     "dev:console": "npm run dev -w @paywall/console",
     "dev:example": "npm run dev -w @paywall/example-api",
-    "lint": "npm run lint -w @paywall/gateway -w @paywall/console -w @paywall/sdk -w @paywall/example-api --if-present"
+    "lint": "npm run lint -w @paywall/gateway -w @paywall/console -w @paywall/sdk -w @paywall/example-api --if-present",
+    "smoke": "node scripts/smoke-test.mjs"
   },
   "engines": {
     "node": ">=20"
