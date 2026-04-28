@@ -1,0 +1,19 @@
+{
+  "name": "solana-usdt-api-paywall",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @paywall/gateway -w @paywall/console -w @paywall/sdk -w @paywall/example-api",
+    "dev": "npm run dev -w @paywall/gateway",
+    "dev:console": "npm run dev -w @paywall/console",
+    "dev:example": "npm run dev -w @paywall/example-api",
+    "lint": "npm run lint -w @paywall/gateway -w @paywall/console -w @paywall/sdk -w @paywall/example-api --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
