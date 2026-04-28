@@ -23,7 +23,24 @@ const cfg = loadConfig();
 const db = openDbSync(cfg.DATABASE_PATH);
 
 const app = express();
-app.use(cors({ origin: cfg.CORS_ORIGIN, credentials: true }));
+// Allow configured origin plus common tunnel hosts (mobile demos).
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (origin === cfg.CORS_ORIGIN) return cb(null, true);
+      try {
+        const h = new URL(origin).hostname;
+        if (h.endsWith(".loca.lt") || h.endsWith(".localtunnel.me")) return cb(null, true);
+        if (h.endsWith(".trycloudflare.com")) return cb(null, true);
+      } catch {
+        /* ignore */
+      }
+      cb(null, false);
+    },
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: "512kb" }));
 
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
