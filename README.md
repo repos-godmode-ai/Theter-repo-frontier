@@ -83,7 +83,8 @@ npm run dev     # gateway only (root shortcut)
 ## Deploy (GitHub + Vercel)
 
 - **GitHub:** [repos-godmode-ai/Theter-repo-frontier](https://github.com/repos-godmode-ai/Theter-repo-frontier) (`main` includes this monorepo).
-- **Vercel:** Root `vercel.json` builds the **console** only. The **gateway** should run on Railway/Fly/Render — see **[DEPLOY.md](./DEPLOY.md)** for step-by-step env vars and CORS.
+- **GitHub Pages:** After adding secrets `VITE_GATEWAY_URL` and `VITE_ADMIN_TOKEN`, set **Settings → Pages → Source: GitHub Actions**. Pushes to `main` run `.github/workflows/deploy-console-pages.yml`. Site: `https://repos-godmode-ai.github.io/Theter-repo-frontier/` (console uses `VITE_BASE_PATH=/Theter-repo-frontier/` in CI).
+- **Vercel:** Root `vercel.json` targets the console; use the Vercel dashboard or the manual workflow in `.github/workflows/deploy-vercel.yml` with `VERCEL_TOKEN` / org / project secrets. The **gateway** belongs on Railway/Fly/Render — see **[DEPLOY.md](./DEPLOY.md)**.
 
 ## License
 

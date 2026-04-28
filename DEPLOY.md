@@ -1,13 +1,34 @@
 # Deploy: GitHub + Vercel + API hosting
 
-The **operator console** is a static Vite app and deploys cleanly to **Vercel**.  
+The **operator console** is a static Vite app.
+
+- **GitHub Pages (automated):** push to `main` runs `.github/workflows/deploy-console-pages.yml` once you add repo secrets and enable Pages (see below).
+- **Vercel:** use the dashboard, or run the manual workflow **Deploy console to Vercel** after adding `VERCEL_*` secrets.
+
 The **gateway** (Express + SQLite + `better-sqlite3`) is **not** suited to Vercel serverless; run it on **Railway**, **Fly.io**, **Render**, or a small VPS.
 
 ## GitHub
 
 Repository: **https://github.com/repos-godmode-ai/Theter-repo-frontier**
 
-The paywall monorepo lives on `main` (merged from `cursor/solana-usdt-api-paywall-3947`).
+The paywall monorepo lives on `main`.
+
+## GitHub Pages (Actions)
+
+1. Repo **Settings → Secrets and variables → Actions → New repository secret**:
+   - `VITE_GATEWAY_URL` — public HTTPS URL of your gateway  
+   - `VITE_ADMIN_TOKEN` — same string as gateway `ADMIN_TOKEN`
+
+2. **Settings → Pages → Build and deployment → Source:** choose **GitHub Actions** (not “Deploy from a branch”).
+
+3. Push to `main` (or **Actions → Deploy console to GitHub Pages → Run workflow**).  
+   The site will be at:
+
+   `https://<owner>.github.io/<repo>/`
+
+   Example: `https://repos-godmode-ai.github.io/Theter-repo-frontier/`
+
+4. CORS: set gateway `CORS_ORIGIN` to that exact URL (the gateway also allows `*.github.io` for previews—see code).
 
 ## 1) Deploy the console to Vercel
 

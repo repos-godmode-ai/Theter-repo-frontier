@@ -1,0 +1,33 @@
+# Deploy console to Vercel (manual). Add repo secrets: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID,
+# VITE_GATEWAY_URL, VITE_ADMIN_TOKEN. Link project once in Vercel dashboard from this GitHub repo.
+name: Deploy console to Vercel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  vercel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Vercel build
+        run: npx vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VITE_GATEWAY_URL: ${{ secrets.VITE_GATEWAY_URL }}
+          VITE_ADMIN_TOKEN: ${{ secrets.VITE_ADMIN_TOKEN }}
+
+      - name: Vercel deploy (prebuilt)
+        run: npx vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
