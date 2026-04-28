@@ -67,6 +67,12 @@ npm run dev -w @paywall/example-api
 5. Gateway verifies the transaction on Solana, applies **policies**, then returns a **session JWT**.
 6. Client retries the API with `Authorization: Bearer <session>`.
 
+**Solana-aligned helpers** (see [Solana token docs](https://solana.com/docs/tokens)):
+
+- `GET /v1/solana/mint-info?mint=` — decimals for the configured or passed mint.
+- `POST /v1/solana/derive-ata` `{ "owner": "<wallet pubkey>" }` — canonical ATA addresses (classic + Token-2022 program).
+- Creating a product **validates** `merchantPayTo` on-chain as an SPL token account for `USDT_MINT`.
+
 ## Security notes (read before mainnet)
 
 - This is **hackathon-grade**: HS256 shared secret, SQLite, no multi-tenant hardening.

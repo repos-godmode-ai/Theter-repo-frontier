@@ -59,6 +59,8 @@ vercel --prod
 
 You need a Vercel account linked to GitHub. The CLI will open a browser to log in if needed.
 
+Public Solana helper endpoints (no admin token): `GET /v1/solana/mint-info`, `POST /v1/solana/derive-ata`. Product creation validates `merchantPayTo` on-chain against `USDT_MINT` (see [Solana token docs](https://solana.com/docs/tokens)).
+
 ## 2) Deploy the gateway (Railway example)
 
 1. Create a **new Railway project** from this repo (same GitHub repo).

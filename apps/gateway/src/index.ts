@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { z } from "zod";
 import { loadConfig } from "./config.js";
 import {
@@ -18,9 +19,18 @@ import {
 } from "./db.js";
 import { signSessionToken, verifySessionToken } from "./jwt.js";
 import { verifyUsdtPaymentTx } from "./solana-verify.js";
+import {
+  deriveAtaAddresses,
+  fetchMintDecimals,
+  solanaDocsTokensUrl,
+  solanaDocsTransactionsUrl,
+  validateMerchantPayTo,
+} from "./solana-helpers.js";
+import { formatAtomicToDecimal } from "./format-atomic.js";
 
 const cfg = loadConfig();
 const db = openDbSync(cfg.DATABASE_PATH);
+const solanaConnection = new Connection(cfg.RPC_URL, "confirmed");
 
 const app = express();
 // Allow configured origin plus common tunnel hosts (mobile demos).
@@ -59,6 +69,52 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "paywall-gateway" });
 });
 
+/** Public: mint metadata for UI (defaults to gateway USDT_MINT). See https://solana.com/docs/tokens */
+app.get("/v1/solana/mint-info", async (req, res) => {
+  try {
+    const mintStr = (req.query.mint as string) || cfg.USDT_MINT;
+    const mint = new PublicKey(mintStr);
+    const decimals = await fetchMintDecimals(solanaConnection, mint);
+    res.json({
+      mint: mint.toBase58(),
+      decimals,
+      docs: {
+        tokens: solanaDocsTokensUrl(),
+        transactions: solanaDocsTransactionsUrl(),
+      },
+    });
+  } catch (e) {
+    res.status(400).json({ error: "invalid_mint", message: String(e instanceof Error ? e.message : e) });
+  }
+});
+
+const deriveAtaSchema = z.object({
+  owner: z.string().min(32).max(64),
+  mint: z.string().min(32).max(64).optional(),
+});
+
+/** Public: canonical ATA addresses for (owner, mint) — https://solana.com/docs/tokens#associated-token-account */
+app.post("/v1/solana/derive-ata", (req, res) => {
+  const parsed = deriveAtaSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body", details: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const owner = new PublicKey(parsed.data.owner);
+    const mint = new PublicKey(parsed.data.mint ?? cfg.USDT_MINT);
+    const addresses = deriveAtaAddresses(owner, mint);
+    res.json({
+      owner: owner.toBase58(),
+      mint: mint.toBase58(),
+      associatedTokenAccounts: addresses,
+      docs: solanaDocsTokensUrl(),
+    });
+  } catch (e) {
+    res.status(400).json({ error: "invalid_pubkey", message: String(e instanceof Error ? e.message : e) });
+  }
+});
+
 const createProductSchema = z.object({
   name: z.string().min(1).max(120),
   merchantPayTo: z.string().min(32).max(64),
@@ -71,19 +127,51 @@ const createProductSchema = z.object({
     .default({ dailyLimitAtomic: "0", approvalOverAtomic: "0" }),
 });
 
-app.post("/v1/admin/products", requireAdmin, (req, res) => {
+app.post("/v1/admin/products", requireAdmin, async (req, res) => {
   const parsed = createProductSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "invalid_body", details: parsed.error.flatten() });
     return;
   }
-  const publicId = createProduct(db, {
-    name: parsed.data.name,
-    merchantPayTo: parsed.data.merchantPayTo,
-    amountAtomic: parsed.data.amountAtomic,
-    policy: parsed.data.policy as ProductPolicy,
-  });
-  res.status(201).json({ publicId });
+  try {
+    const payTo = new PublicKey(parsed.data.merchantPayTo);
+    const expectedMint = new PublicKey(cfg.USDT_MINT);
+    const v = await validateMerchantPayTo({
+      connection: solanaConnection,
+      expectedMint,
+      payTo,
+    });
+    if (!v.ok) {
+      res.status(400).json({
+        error: "invalid_merchant_pay_to",
+        reason: v.reason,
+        docs: solanaDocsTokensUrl(),
+        hint: "payTo must be an SPL token account that holds the configured USDT mint (often the merchant wallet ATA).",
+      });
+      return;
+    }
+    const publicId = createProduct(db, {
+      name: parsed.data.name,
+      merchantPayTo: parsed.data.merchantPayTo,
+      amountAtomic: parsed.data.amountAtomic,
+      policy: parsed.data.policy as ProductPolicy,
+    });
+    res.status(201).json({
+      publicId,
+      payToValidation: {
+        mintDecimals: v.mint.decimals,
+        tokenProgram: v.mint.program,
+        isCanonicalAta: v.isCanonicalAta,
+        merchantWallet: v.tokenAccountOwner,
+      },
+    });
+  } catch (e) {
+    res.status(400).json({
+      error: "validation_failed",
+      message: String(e instanceof Error ? e.message : e),
+      docs: solanaDocsTokensUrl(),
+    });
+  }
 });
 
 app.get("/v1/admin/products", requireAdmin, (_req, res) => {
@@ -112,7 +200,7 @@ app.get("/v1/admin/payments", requireAdmin, (_req, res) => {
   res.json({ payments: rows });
 });
 
-app.post("/v1/products/:productPublicId/challenges", (req, res) => {
+app.post("/v1/products/:productPublicId/challenges", async (req, res) => {
   const product = getProductByPublicId(db, req.params.productPublicId);
   if (!product) {
     res.status(404).json({ error: "product_not_found" });
@@ -120,16 +208,32 @@ app.post("/v1/products/:productPublicId/challenges", (req, res) => {
   }
   const ttl = 15;
   const { referenceId, expiresAt } = createPaymentChallenge(db, product.id, ttl);
+  let mintDecimals = 6;
+  try {
+    mintDecimals = await fetchMintDecimals(solanaConnection, new PublicKey(cfg.USDT_MINT));
+  } catch {
+    /* default */
+  }
+  const humanAmount = formatAtomicToDecimal(BigInt(product.amount_atomic), mintDecimals);
+
   res.status(201).json({
     referenceId,
     payTo: product.merchant_pay_to,
     amountAtomic: product.amount_atomic,
+    mintDecimals,
+    humanAmount,
+    humanCurrency: "USDT",
     memo: referenceId,
+    memoProgram: "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
     usdtMint: cfg.USDT_MINT,
     expiresAt,
     verifyUrl: `${cfg.publicBaseUrl}/v1/verify`,
+    solanaDocs: {
+      tokens: solanaDocsTokensUrl(),
+      transactions: solanaDocsTransactionsUrl(),
+    },
     instructions:
-      "Build a tx: SPL USDT transfer to payTo for >= amountAtomic, plus Memo program instruction with memo text === referenceId. Then POST verifyUrl with JSON { referenceId, transactionSignature }.",
+      "Atomic: all instructions in one transaction succeed or all revert (https://solana.com/docs/core/transactions). Include: (1) SPL transfer or transferChecked of >= amountAtomic of usdtMint into payTo, (2) Memo instruction with UTF-8 memo exactly containing referenceId. Sign with the token account authority (wallet). POST verifyUrl with { referenceId, transactionSignature }.",
   });
 });
 

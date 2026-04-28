@@ -47,6 +47,61 @@ function walkInstructions(tx: ParsedTransactionWithMeta, cb: (ix: ParsedInstruct
   }
 }
 
+/** Fee payer: first signing account in parsed message (typical wallet-paid tx). */
+function getFeePayer(tx: ParsedTransactionWithMeta): PublicKey | null {
+  const keys = tx.transaction.message.accountKeys;
+  if (!keys?.length) return null;
+  const signer = keys.find((k) => k.signer);
+  return (signer ?? keys[0]).pubkey;
+}
+
+/**
+ * Prefer the SPL token account *owner* as payer identity when they signed the tx (wallet-paid flow).
+ */
+function getPayerPubkeyForPayment(
+  tx: ParsedTransactionWithMeta,
+  mint: PublicKey,
+  payTo: PublicKey,
+  minAmount: bigint
+): string | null {
+  const feePayer = getFeePayer(tx);
+  const keys = tx.transaction.message.accountKeys;
+  const signers = new Set<string>();
+  for (const k of keys) {
+    if (k.signer) signers.add(k.pubkey.toBase58());
+  }
+
+  let signingAuthority: string | null = null;
+  walkInstructions(tx, (ix) => {
+    if (ix.program !== "spl-token") return;
+    const p = ix.parsed as Record<string, unknown> | undefined;
+    if (!p || typeof p !== "object") return;
+    const type = p.type as string | undefined;
+    if (type !== "transfer" && type !== "transferChecked") return;
+    const info = p.info as Record<string, unknown> | undefined;
+    if (!info) return;
+    if (String(info.mint) !== mint.toBase58()) return;
+    if (String(info.destination) !== payTo.toBase58()) return;
+    let amt = 0n;
+    if (type === "transferChecked") {
+      const ta = info.tokenAmount as { amount?: string } | undefined;
+      amt = BigInt(ta?.amount ?? "0");
+    } else {
+      amt = BigInt(String(info.amount ?? "0"));
+    }
+    if (amt < minAmount) return;
+    const auth = info.authority as string | undefined;
+    if (!auth) return;
+    const ownerPk = new PublicKey(auth);
+    if (signers.has(ownerPk.toBase58())) {
+      signingAuthority = ownerPk.toBase58();
+    }
+  });
+
+  if (signingAuthority) return signingAuthority;
+  return feePayer?.toBase58() ?? null;
+}
+
 export async function verifyUsdtPaymentTx(params: {
   rpcUrl: string;
   usdtMint: string;
@@ -88,11 +143,10 @@ export async function verifyUsdtPaymentTx(params: {
     };
   }
 
-  const keys = tx.transaction.message.accountKeys;
-  const payer = keys[0]?.pubkey;
-  if (!payer) {
-    return { ok: false, reason: "Could not determine fee payer" };
+  const payerPubkey = getPayerPubkeyForPayment(tx, mint, payTo, params.minAmountAtomic);
+  if (!payerPubkey) {
+    return { ok: false, reason: "Could not determine payer (fee payer or token authority)" };
   }
 
-  return { ok: true, payerPubkey: payer.toBase58(), amountPaidAtomic: amountPaid };
+  return { ok: true, payerPubkey, amountPaidAtomic: amountPaid };
 }

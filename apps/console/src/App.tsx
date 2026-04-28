@@ -40,12 +40,29 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-function usdtFromAtomic(atomic: string): string {
+async function publicApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(`${gateway}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`${r.status}: ${t}`);
+  }
+  return r.json() as Promise<T>;
+}
+
+function formatAtomic(atomic: string, decimals: number): string {
   const n = BigInt(atomic || "0");
-  const whole = n / 1_000_000n;
-  const frac = n % 1_000_000n;
-  const fracStr = frac.toString().padStart(6, "0").replace(/0+$/, "");
-  return fracStr ? `${whole}.${fracStr}` : `${whole}`;
+  const scale = 10n ** BigInt(decimals);
+  const whole = n / scale;
+  const frac = n % scale;
+  if (frac === 0n) return whole.toString();
+  const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
+  return `${whole}.${fracStr}`;
 }
 
 function statusClass(status: string): string {
@@ -68,6 +85,8 @@ export function App() {
   const [amountAtomic, setAmountAtomic] = useState("1000000");
   const [dailyLimit, setDailyLimit] = useState("0");
   const [approvalOver, setApprovalOver] = useState("0");
+  const [mintDecimals, setMintDecimals] = useState(6);
+  const [merchantOwner, setMerchantOwner] = useState("");
 
   const canUse = useMemo(() => Boolean(adminToken && gateway), [adminToken, gateway]);
 
@@ -91,11 +110,43 @@ export function App() {
     refresh().catch((e) => setError(String(e.message)));
   }, [refresh]);
 
+  useEffect(() => {
+    if (!gateway) return;
+    publicApi<{ decimals: number }>(`/v1/solana/mint-info`)
+      .then((m) => setMintDecimals(m.decimals))
+      .catch(() => setMintDecimals(6));
+  }, [gateway]);
+
+  const lookupAta = async () => {
+    const o = merchantOwner.trim();
+    if (!o) {
+      setError("Enter merchant wallet address first.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await publicApi<{
+        associatedTokenAccounts: { tokenProgram: string; address: string }[];
+      }>(`/v1/solana/derive-ata`, {
+        method: "POST",
+        body: JSON.stringify({ owner: o }),
+      });
+      const classic = res.associatedTokenAccounts.find((a) => a.tokenProgram.includes("Tokenkeg"));
+      if (classic) setMerchantPayTo(classic.address);
+      else if (res.associatedTokenAccounts[0]) setMerchantPayTo(res.associatedTokenAccounts[0].address);
+    } catch (e: unknown) {
+      setError(String(e instanceof Error ? e.message : e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createProduct = async () => {
     setBusy(true);
     setError(null);
     try {
-      const res = await api<{ publicId: string }>("/v1/admin/products", {
+      const res = await api<{ publicId: string; payToValidation?: unknown }>("/v1/admin/products", {
         method: "POST",
         body: JSON.stringify({
           name,
@@ -105,7 +156,7 @@ export function App() {
         }),
       });
       await refresh();
-      showToast("Product created", `Public ID: ${res.publicId}`);
+      showToast("Product created", `Public ID: ${res.publicId}${res.payToValidation ? " · on-chain payTo validated." : ""}`);
     } catch (e: unknown) {
       setError(String(e instanceof Error ? e.message : e));
     } finally {
@@ -188,6 +239,15 @@ export function App() {
               <span className="badge">Memo reference</span>
               <span className="badge badge-outline">Session JWT</span>
             </div>
+            <p className="hero-doc-link">
+              <a href="https://solana.com/docs/tokens" target="_blank" rel="noreferrer">
+                Solana token docs
+              </a>
+              <span aria-hidden> · </span>
+              <a href="https://solana.com/docs/core/transactions" target="_blank" rel="noreferrer">
+                Transactions
+              </a>
+            </p>
           </div>
           <div className="hero-visual animate-fade-up stagger-2">
             <HeroDiagram />
@@ -199,8 +259,25 @@ export function App() {
             <div className="card-header">
               <div>
                 <h3 className="card-title">New product</h3>
-                <p className="card-sub">Maps to a payTo USDT token account and atomic price.</p>
+                <p className="card-sub">Maps to a payTo SPL token account for the gateway mint (see ATA model).</p>
               </div>
+            </div>
+
+            <div className="field">
+              <label htmlFor="p-owner">Merchant wallet (owner)</label>
+              <div className="row-inline">
+                <input
+                  id="p-owner"
+                  className="input input-mono"
+                  value={merchantOwner}
+                  onChange={(e) => setMerchantOwner(e.target.value)}
+                  placeholder="Pubkey of wallet that owns the USDT ATA"
+                />
+                <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => lookupAta()}>
+                  Fill ATA
+                </button>
+              </div>
+              <p className="hint">Uses gateway <span className="mono">/v1/solana/derive-ata</span> (canonical ATA for this mint).</p>
             </div>
 
             <div className="field">
@@ -224,7 +301,8 @@ export function App() {
               <label htmlFor="p-price">Price (atomic USDT)</label>
               <input id="p-price" className="input input-mono" value={amountAtomic} onChange={(e) => setAmountAtomic(e.target.value)} />
               <p className="hint">
-                6 decimals · preview ≈ <strong style={{ color: "var(--cyan)" }}>{usdtFromAtomic(amountAtomic)} USDT</strong> per access
+                Mint decimals: {mintDecimals} · preview ≈{" "}
+                <strong style={{ color: "var(--cyan)" }}>{formatAtomic(amountAtomic, mintDecimals)} USDT</strong> per access
               </p>
             </div>
 
@@ -281,7 +359,7 @@ export function App() {
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Price</div>
                       <div className="mono" style={{ fontSize: "0.95rem" }}>
-                        {usdtFromAtomic(p.amountAtomic)} USDT
+                        {formatAtomic(p.amountAtomic, mintDecimals)} USDT
                       </div>
                     </div>
                   </div>
