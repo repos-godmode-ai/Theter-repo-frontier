@@ -33,6 +33,7 @@ app.use(
         const h = new URL(origin).hostname;
         if (h.endsWith(".loca.lt") || h.endsWith(".localtunnel.me")) return cb(null, true);
         if (h.endsWith(".trycloudflare.com")) return cb(null, true);
+        if (h.endsWith(".vercel.app")) return cb(null, true);
       } catch {
         /* ignore */
       }

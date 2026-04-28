@@ -80,6 +80,11 @@ npm run build   # build all workspaces
 npm run dev     # gateway only (root shortcut)
 ```
 
+## Deploy (GitHub + Vercel)
+
+- **GitHub:** [repos-godmode-ai/Theter-repo-frontier](https://github.com/repos-godmode-ai/Theter-repo-frontier) (`main` includes this monorepo).
+- **Vercel:** Root `vercel.json` builds the **console** only. The **gateway** should run on Railway/Fly/Render — see **[DEPLOY.md](./DEPLOY.md)** for step-by-step env vars and CORS.
+
 ## License
 
 MIT
