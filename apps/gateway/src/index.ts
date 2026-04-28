@@ -30,12 +30,23 @@ const db = openDbSync(cfg.DATABASE_PATH);
 const solanaConnection = new Connection(cfg.RPC_URL, "confirmed");
 
 const app = express();
-// Allow configured origin plus common tunnel hosts (mobile demos).
+
+function isLocalDevOrigin(origin: string): boolean {
+  try {
+    const h = new URL(origin).hostname;
+    return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+// Allow configured origin, local Vite/console hosts, plus common tunnel hosts.
 app.use(
   cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       if (origin === cfg.CORS_ORIGIN) return cb(null, true);
+      if (isLocalDevOrigin(origin)) return cb(null, true);
       try {
         const h = new URL(origin).hostname;
         if (h.endsWith(".loca.lt") || h.endsWith(".localtunnel.me")) return cb(null, true);
