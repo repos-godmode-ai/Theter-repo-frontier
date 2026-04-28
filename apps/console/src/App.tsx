@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { BrandGlyph, HeroDiagram } from "./illustrations/HeroDiagram";
 
 const gateway = import.meta.env.VITE_GATEWAY_URL ?? "http://localhost:8787";
 const adminToken = import.meta.env.VITE_ADMIN_TOKEN ?? "";
@@ -39,19 +40,41 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+function usdtFromAtomic(atomic: string): string {
+  const n = BigInt(atomic || "0");
+  const whole = n / 1_000_000n;
+  const frac = n % 1_000_000n;
+  const fracStr = frac.toString().padStart(6, "0").replace(/0+$/, "");
+  return fracStr ? `${whole}.${fracStr}` : `${whole}`;
+}
+
+function statusClass(status: string): string {
+  if (status === "verified") return "status status-verified";
+  if (status === "pending") return "status status-pending";
+  if (status === "awaiting_approval") return "status status-awaiting";
+  if (status === "rejected") return "status status-rejected";
+  return "status";
+}
+
 export function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState<{ title: string; body: string } | null>(null);
 
   const [name, setName] = useState("Premium API");
   const [merchantPayTo, setMerchantPayTo] = useState("");
-  const [amountAtomic, setAmountAtomic] = useState("1000");
+  const [amountAtomic, setAmountAtomic] = useState("1000000");
   const [dailyLimit, setDailyLimit] = useState("0");
   const [approvalOver, setApprovalOver] = useState("0");
 
   const canUse = useMemo(() => Boolean(adminToken && gateway), [adminToken, gateway]);
+
+  const showToast = useCallback((title: string, body: string) => {
+    setToast({ title, body });
+    window.setTimeout(() => setToast(null), 12000);
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!canUse) return;
@@ -72,7 +95,7 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
-      await api("/v1/admin/products", {
+      const res = await api<{ publicId: string }>("/v1/admin/products", {
         method: "POST",
         body: JSON.stringify({
           name,
@@ -82,8 +105,9 @@ export function App() {
         }),
       });
       await refresh();
-    } catch (e: any) {
-      setError(String(e.message));
+      showToast("Product created", `Public ID: ${res.publicId}`);
+    } catch (e: unknown) {
+      setError(String(e instanceof Error ? e.message : e));
     } finally {
       setBusy(false);
     }
@@ -94,10 +118,10 @@ export function App() {
     setError(null);
     try {
       const res = await api<{ token: string }>(`/v1/admin/approvals/${referenceId}/grant`, { method: "POST" });
-      alert(`Session issued. Token (store securely): ${res.token.slice(0, 24)}…`);
       await refresh();
-    } catch (e: any) {
-      setError(String(e.message));
+      showToast("Session issued — Bearer token", res.token);
+    } catch (e: unknown) {
+      setError(String(e instanceof Error ? e.message : e));
     } finally {
       setBusy(false);
     }
@@ -105,110 +129,229 @@ export function App() {
 
   if (!canUse) {
     return (
-      <div style={{ fontFamily: "system-ui", padding: 24, maxWidth: 640 }}>
-        <h1>USDT Paywall Console</h1>
-        <p>
-          Set <code>VITE_GATEWAY_URL</code> and <code>VITE_ADMIN_TOKEN</code> in <code>apps/console/.env</code> (see{" "}
-          <code>.env.example</code>), then restart Vite.
-        </p>
-      </div>
+      <>
+        <div className="app-bg" aria-hidden />
+        <div className="setup">
+          <div className="setup-card animate-fade-up">
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+              <div className="brand-mark" style={{ width: 56, height: 56, borderRadius: 18 }}>
+                <BrandGlyph />
+              </div>
+            </div>
+            <h1>Configure operator access</h1>
+            <p>
+              Add <code>VITE_GATEWAY_URL</code> and <code>VITE_ADMIN_TOKEN</code> to{" "}
+              <code>apps/console/.env</code> (see <code>.env.example</code>), then restart the dev server or redeploy.
+            </p>
+            <p style={{ fontSize: "0.85rem" }}>These values must match your paywall gateway and admin token.</p>
+          </div>
+        </div>
+      </>
     );
   }
 
   return (
-    <div style={{ fontFamily: "system-ui", padding: 24, maxWidth: 960 }}>
-      <h1>USDT Paywall Console</h1>
-      <p style={{ color: "#444" }}>
-        Gateway: <code>{gateway}</code>
-      </p>
-      {error && <pre style={{ background: "#fee", padding: 12 }}>{error}</pre>}
+    <>
+      <div className="app-bg" aria-hidden />
+      <div className="shell">
+        <header className="topbar animate-fade-up">
+          <div className="brand">
+            <div className="brand-mark">
+              <BrandGlyph />
+            </div>
+            <div>
+              <h1>USDT Paywall</h1>
+              <p>Operator console · Solana micro-billing</p>
+            </div>
+          </div>
+          <div className="topbar-actions">
+            <span className="gateway-pill" title={gateway}>
+              {gateway}
+            </span>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => refresh().catch((e) => setError(String(e.message)))}>
+              Refresh data
+            </button>
+          </div>
+        </header>
 
-      <section style={{ marginTop: 24 }}>
-        <h2>Create product</h2>
-        <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
-          <label>
-            Name
-            <input style={{ width: "100%" }} value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label>
-            Merchant USDT ATA (payTo)
-            <input
-              style={{ width: "100%", fontFamily: "monospace" }}
-              value={merchantPayTo}
-              onChange={(e) => setMerchantPayTo(e.target.value)}
-              placeholder="Associated token account pubkey"
-            />
-          </label>
-          <label>
-            Price (atomic units, 6 decimals → 1 USDT = 1000000)
-            <input style={{ width: "100%" }} value={amountAtomic} onChange={(e) => setAmountAtomic(e.target.value)} />
-          </label>
-          <label>
-            Daily limit per payer (atomic, 0 = off)
-            <input style={{ width: "100%" }} value={dailyLimit} onChange={(e) => setDailyLimit(e.target.value)} />
-          </label>
-          <label>
-            Require approval over (atomic, 0 = off)
-            <input style={{ width: "100%" }} value={approvalOver} onChange={(e) => setApprovalOver(e.target.value)} />
-          </label>
-          <button disabled={busy} onClick={createProduct}>
-            Create
-          </button>
+        {error && <div className="alert animate-fade-up">{error}</div>}
+
+        <section className="hero">
+          <div className="hero-copy animate-fade-up stagger-1">
+            <h2>Programmable USDT access for your APIs</h2>
+            <p>
+              Create paywalled products, enforce daily spend caps, and approve high-value settlements before issuing
+              session tokens—built for the same flow as HTTP 402 + on-chain USDT verification.
+            </p>
+            <div className="hero-badges">
+              <span className="badge">Solana SPL</span>
+              <span className="badge">Memo reference</span>
+              <span className="badge badge-outline">Session JWT</span>
+            </div>
+          </div>
+          <div className="hero-visual animate-fade-up stagger-2">
+            <HeroDiagram />
+          </div>
+        </section>
+
+        <div className="grid-2">
+          <section className="card animate-fade-up stagger-2">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">New product</h3>
+                <p className="card-sub">Maps to a payTo USDT token account and atomic price.</p>
+              </div>
+            </div>
+
+            <div className="field">
+              <label htmlFor="p-name">Display name</label>
+              <input id="p-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Market data API" />
+            </div>
+
+            <div className="field">
+              <label htmlFor="p-ata">Merchant USDT ATA</label>
+              <input
+                id="p-ata"
+                className="input input-mono"
+                value={merchantPayTo}
+                onChange={(e) => setMerchantPayTo(e.target.value)}
+                placeholder="Associated token account (pubkey)"
+              />
+              <p className="hint">Must be the USDT ATA for the mint configured on the gateway.</p>
+            </div>
+
+            <div className="field">
+              <label htmlFor="p-price">Price (atomic USDT)</label>
+              <input id="p-price" className="input input-mono" value={amountAtomic} onChange={(e) => setAmountAtomic(e.target.value)} />
+              <p className="hint">
+                6 decimals · preview ≈ <strong style={{ color: "var(--cyan)" }}>{usdtFromAtomic(amountAtomic)} USDT</strong> per access
+              </p>
+            </div>
+
+            <div className="row-2">
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label htmlFor="p-daily">Daily limit / payer</label>
+                <input
+                  id="p-daily"
+                  className="input input-mono"
+                  value={dailyLimit}
+                  onChange={(e) => setDailyLimit(e.target.value)}
+                  placeholder="0 = off"
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label htmlFor="p-approval">Approve over (atomic)</label>
+                <input
+                  id="p-approval"
+                  className="input input-mono"
+                  value={approvalOver}
+                  onChange={(e) => setApprovalOver(e.target.value)}
+                  placeholder="0 = off"
+                />
+              </div>
+            </div>
+            <p className="hint">When approval threshold is set, large payments queue here until you grant a session.</p>
+
+            <div style={{ marginTop: 22 }}>
+              <button type="button" className="btn btn-primary" disabled={busy || !merchantPayTo.trim()} onClick={createProduct}>
+                {busy ? "Working…" : "Create product"}
+              </button>
+            </div>
+          </section>
+
+          <section className="card animate-fade-up stagger-3">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Live products</h3>
+                <p className="card-sub">{products.length ? `${products.length} configured` : "None yet — create one on the left."}</p>
+              </div>
+            </div>
+            {products.length === 0 ? (
+              <div className="empty">No products. Your public IDs will appear here for SDK wiring.</div>
+            ) : (
+              <div className="product-list">
+                {products.map((p) => (
+                  <div key={p.publicId} className="product-item">
+                    <div>
+                      <div className="product-name">{p.name}</div>
+                      <div style={{ marginTop: 6 }}>
+                        <span className="mono">{p.publicId}</span>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Price</div>
+                      <div className="mono" style={{ fontSize: "0.95rem" }}>
+                        {usdtFromAtomic(p.amountAtomic)} USDT
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
-      </section>
 
-      <section style={{ marginTop: 32 }}>
-        <h2>Products</h2>
-        <button onClick={() => refresh().catch((e) => setError(String(e.message)))}>Refresh</button>
-        <ul>
-          {products.map((p) => (
-            <li key={p.publicId}>
-              <strong>{p.name}</strong> — <code>{p.publicId}</code> — price {p.amountAtomic} — payTo{" "}
-              <code>{p.merchantPayTo.slice(0, 8)}…</code>
-            </li>
-          ))}
-        </ul>
-      </section>
+        <section className="card animate-fade-up stagger-4" style={{ marginTop: 20 }}>
+          <div className="card-header">
+            <div>
+              <h3 className="card-title">Recent payments</h3>
+              <p className="card-sub">Verification, policy holds, and session grants.</p>
+            </div>
+          </div>
+          {payments.length === 0 ? (
+            <div className="empty">No payment rows yet. Traffic will show here after callers hit your paywalled routes.</div>
+          ) : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Reference</th>
+                    <th>Product</th>
+                    <th>Status</th>
+                    <th>Payer</th>
+                    <th>Transaction</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {payments.map((p) => (
+                    <tr key={p.referenceId}>
+                      <td className="mono" style={{ maxWidth: 140 }}>
+                        {p.referenceId}
+                      </td>
+                      <td className="mono">{p.productPublicId}</td>
+                      <td>
+                        <span className={statusClass(p.status)}>
+                          <span className="status-dot" aria-hidden />
+                          {p.status.replaceAll("_", " ")}
+                        </span>
+                      </td>
+                      <td className="mono">{p.payerPubkey ? `${p.payerPubkey.slice(0, 4)}…${p.payerPubkey.slice(-4)}` : "—"}</td>
+                      <td className="mono">{p.transactionSignature ? `${p.transactionSignature.slice(0, 6)}…` : "—"}</td>
+                      <td>
+                        {p.status === "awaiting_approval" && (
+                          <button type="button" className="btn btn-danger-ghost btn-sm" disabled={busy} onClick={() => grant(p.referenceId)}>
+                            Grant session
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
 
-      <section style={{ marginTop: 32 }}>
-        <h2>Recent payments</h2>
-        <table cellPadding={8} style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
-              <th>Ref</th>
-              <th>Product</th>
-              <th>Status</th>
-              <th>Payer</th>
-              <th>Tx</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {payments.map((p) => (
-              <tr key={p.referenceId} style={{ borderBottom: "1px solid #eee" }}>
-                <td>
-                  <code>{p.referenceId}</code>
-                </td>
-                <td>{p.productPublicId}</td>
-                <td>{p.status}</td>
-                <td>
-                  <code>{p.payerPubkey?.slice(0, 6) ?? "—"}</code>
-                </td>
-                <td>
-                  <code>{p.transactionSignature?.slice(0, 8) ?? "—"}</code>
-                </td>
-                <td>
-                  {p.status === "awaiting_approval" && (
-                    <button disabled={busy} onClick={() => grant(p.referenceId)}>
-                      Grant session
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-    </div>
+      {toast && (
+        <div className="toast" role="status">
+          <strong>{toast.title}</strong>
+          <span className="mono" style={{ display: "block", maxHeight: 120, overflow: "auto", marginTop: 8 }}>
+            {toast.body}
+          </span>
+        </div>
+      )}
+    </>
   );
 }
